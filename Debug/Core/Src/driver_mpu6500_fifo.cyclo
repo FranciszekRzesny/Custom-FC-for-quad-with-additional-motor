@@ -1,0 +1,4 @@
+../Core/Src/driver_mpu6500_fifo.c:48:9:mpu6500_fifo_irq_handler	2
+../Core/Src/driver_mpu6500_fifo.c:67:9:mpu6500_fifo_init	57
+../Core/Src/driver_mpu6500_fifo.c:648:9:mpu6500_fifo_read	2
+../Core/Src/driver_mpu6500_fifo.c:670:9:mpu6500_fifo_deinit	2

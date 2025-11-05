@@ -1,0 +1,13 @@
+../Core/interface/driver_mpu6500_interface.c:57:9:mpu6500_interface_iic_init	1
+../Core/interface/driver_mpu6500_interface.c:69:9:mpu6500_interface_iic_deinit	1
+../Core/interface/driver_mpu6500_interface.c:85:9:mpu6500_interface_iic_read	1
+../Core/interface/driver_mpu6500_interface.c:101:9:mpu6500_interface_iic_write	1
+../Core/interface/driver_mpu6500_interface.c:113:9:mpu6500_interface_spi_init	3
+../Core/interface/driver_mpu6500_interface.c:140:9:mpu6500_interface_spi_deinit	1
+../Core/interface/driver_mpu6500_interface.c:155:9:mpu6500_interface_spi_read	3
+../Core/interface/driver_mpu6500_interface.c:187:9:mpu6500_interface_spi_write	3
+../Core/interface/driver_mpu6500_interface.c:214:6:mpu6500_interface_delay_ms	1
+../Core/interface/driver_mpu6500_interface.c:224:6:mpu6500_interface_debug_print	1
+../Core/interface/driver_mpu6500_interface.c:234:6:mpu6500_interface_receive_callback	6
+../Core/interface/driver_mpu6500_interface.c:283:6:mpu6500_interface_dmp_tap_callback	7
+../Core/interface/driver_mpu6500_interface.c:337:6:mpu6500_interface_dmp_orient_callback	5

@@ -1,0 +1,4 @@
+../Core/Src/driver_mpu6500_fifo.c:48:9:mpu6500_fifo_irq_handler	8	static
+../Core/Src/driver_mpu6500_fifo.c:67:9:mpu6500_fifo_init	24	static
+../Core/Src/driver_mpu6500_fifo.c:648:9:mpu6500_fifo_read	32	static
+../Core/Src/driver_mpu6500_fifo.c:670:9:mpu6500_fifo_deinit	8	static

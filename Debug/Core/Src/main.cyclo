@@ -1,0 +1,16 @@
+../Core/Src/main.c:96:20:ESC_SetPulse_us	3
+../Core/Src/main.c:126:7:get_delta_time	1
+../Core/Src/main.c:135:6:update_orientation	7
+../Core/Src/main.c:158:6:calibrate_gyro	2
+../Core/Src/main.c:177:6:HAL_TIM_PeriodElapsedCallback	2
+../Core/Src/main.c:192:5:main	4
+../Core/Src/main.c:298:6:SystemClock_Config	4
+../Core/Src/main.c:352:13:MX_SPI1_Init	2
+../Core/Src/main.c:392:13:MX_TIM1_Init	7
+../Core/Src/main.c:471:13:MX_TIM2_Init	7
+../Core/Src/main.c:534:13:MX_TIM3_Init	8
+../Core/Src/main.c:601:13:MX_TIM5_Init	6
+../Core/Src/main.c:660:13:MX_TIM12_Init	5
+../Core/Src/main.c:712:13:MX_GPIO_Init	1
+../Core/Src/main.c:744:6:MPU_Config	1
+../Core/Src/main.c:775:6:Error_Handler	1
