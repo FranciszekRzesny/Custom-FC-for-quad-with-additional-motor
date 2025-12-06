@@ -25,5 +25,6 @@ SUBDIRS := \
 Core/Src \
 Core/Startup \
 Core/interface \
+Drivers/BSP/Components/lps22hb \
 Drivers/STM32F7xx_HAL_Driver/Src \
 
