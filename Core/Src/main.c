@@ -34,6 +34,8 @@
 #include "ibus.h"
 
 #include "math.h"
+
+#include "string.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -83,11 +85,21 @@ float dt = 0;
 
 uint16_t ibus_data[IBUS_USER_CHANNELS];
 
-PID_t pid_roll  = { 3.0f, 0.02f, 1.8f };
-PID_t pid_pitch = { 3.0f, 0.02f, 1.8f };
-PID_t pid_yaw   = { 3.0f, 0.02f, 0.0f };
+PID_t pid_roll  = { 15.0f, 0.02f, 1.8f };
+PID_t pid_pitch = { 15.0f, 0.02f, 1.8f };
+PID_t pid_yaw   = { 15.0f, 0.02f, 0.0f };
 
 uint16_t m1, m2, m3, m4; //motor outputs
+
+uint8_t uart_rx_buffer[32];
+volatile uint8_t ibus_data_ready = 0;
+volatile uint8_t sync_found = 0;
+uint8_t ibus_frame[32];
+//static uint8_t sync_buffer[64];
+//static uint8_t sync_index = 0;
+
+uint8_t arming = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -114,32 +126,35 @@ void compute_motor_pwm(float roll, float pitch, float yaw, float dt,
                        uint16_t *m1, uint16_t *m2,
                        uint16_t *m3, uint16_t *m4)
 {
-    // Zadane orientacje – trzymanie poziomu
     float target_roll = 0.0f;
     float target_pitch = 0.0f;
     float target_yaw = 0.0f;
 
-    // Błędy PID
+    // Calculate errors
     float roll_error  = target_roll  - roll;
     float pitch_error = target_pitch - pitch;
     float yaw_error   = target_yaw   - yaw;
 
-    // Wyjścia PID
+    // PID output
     float roll_correction  = pid_compute(&pid_roll,  roll_error,  dt);
     float pitch_correction = pid_compute(&pid_pitch, pitch_error, dt);
     float yaw_correction   = pid_compute(&pid_yaw,   yaw_error,   dt);
 
-    // Mieszanie sygnałów dla konfiguracji X
-    float m1_f = throttle + pitch_correction + roll_correction - yaw_correction;  // Front Left
-    float m2_f = throttle + pitch_correction - roll_correction + yaw_correction;  // Front Right
-    float m3_f = throttle - pitch_correction - roll_correction - yaw_correction;  // Rear Right
-    float m4_f = throttle - pitch_correction + roll_correction + yaw_correction;  // Rear Left
+    // Summarise signals
+    float m1_f = throttle + pitch_correction + roll_correction - yaw_correction;  	// Front Left
+    float m2_f = throttle + pitch_correction - roll_correction + yaw_correction;  	// Front Right
+    float m3_f = throttle - pitch_correction - roll_correction - yaw_correction;  	// Rear Right
+    float m4_f = throttle - pitch_correction + roll_correction + yaw_correction;  	// Rear Left
 
-    // Ograniczenia PWM
-    if (m1_f > 2000) m1_f = 2000; if (m1_f < 1000) m1_f = 1000;
-    if (m2_f > 2000) m2_f = 2000; if (m2_f < 1000) m2_f = 1000;
-    if (m3_f > 2000) m3_f = 2000; if (m3_f < 1000) m3_f = 1000;
-    if (m4_f > 2000) m4_f = 2000; if (m4_f < 1000) m4_f = 1000;
+    // PWM LIMITATION
+    if (m1_f > 2000) m1_f = 2000;
+    if (m1_f < 1000) m1_f = 1000;
+    if (m2_f > 2000) m2_f = 2000;
+    if (m2_f < 1000) m2_f = 1000;
+    if (m3_f > 2000) m3_f = 2000;
+    if (m3_f < 1000) m3_f = 1000;
+    if (m4_f > 2000) m4_f = 2000;
+    if (m4_f < 1000) m4_f = 1000;
 
     *m1 = (uint16_t)m1_f;
     *m2 = (uint16_t)m2_f;
@@ -150,7 +165,6 @@ void compute_motor_pwm(float roll, float pitch, float yaw, float dt,
 static inline void ESC_SetPulse_us(uint16_t us, uint8_t motor_index)
 {
 
-	//przy refakotryzacji mozna dodac argument wybierajacy kanal do ustawienia pwm
 	if (us < 1000) us = 1000;
 	if (us > 2000) us = 2000;
 
@@ -196,6 +210,17 @@ static inline void Servo_SetPulse_us(uint16_t us, uint8_t servo_index)
 		__HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_4, us);
 		__HAL_TIM_SET_COMPARE(&htim12, TIM_CHANNEL_2, us);
 	}
+}
+
+static inline uint16_t map_rc_to_servo(uint16_t rc)
+{
+    if (rc < 1000) rc = 1000;
+    if (rc > 2000) rc = 2000;
+
+    uint32_t tmp = (uint32_t)(rc - 1000) * 2060u;
+    tmp = (tmp * 1049u) >> 20;
+
+    return (uint16_t)(490u + tmp);
 }
 
 float get_delta_time(void)
@@ -249,6 +274,27 @@ void calibrate_gyro(int samples)
 	 gyro_bias[2] = sum[2] / samples;
 }
 
+void arm_esc()
+{
+	if(arming == 0 && ibus_data[9] == 2000)
+	{
+		ESC_SetPulse_us(1000, 1);
+		ESC_SetPulse_us(1000, 2);
+		ESC_SetPulse_us(1000, 3);
+		ESC_SetPulse_us(1000, 4);
+		ESC_SetPulse_us(1000, 5);
+		arming = 1;
+	} else if(arming == 1 && ibus_data[9] != 2000)
+	{
+		ESC_SetPulse_us(0, 1);
+		ESC_SetPulse_us(0, 2);
+		ESC_SetPulse_us(0, 3);
+		ESC_SetPulse_us(0, 4);
+		ESC_SetPulse_us(0, 5);
+		arming = 0;
+	}
+}
+
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
 	if(htim == &htim1)
@@ -257,6 +303,11 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	}
 }
 
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+	if(huart == IBUS_UART)
+		ibus_reset_failsafe();
+}
 
 /* USER CODE END 0 */
 
@@ -272,7 +323,7 @@ int main(void)
   /* USER CODE END 1 */
 
   /* MPU Configuration--------------------------------------------------------*/
-  MPU_Config();
+   MPU_Config();
 
   /* MCU Configuration--------------------------------------------------------*/
 
@@ -312,16 +363,10 @@ int main(void)
   HAL_TIM_PWM_Start(&htim12, TIM_CHANNEL_2);
 
   HAL_TIM_Base_Start_IT(&htim1);
+  //HAL_UART_Receive_DMA(&huart4, uart_rx_buffer, 32);
+  __HAL_UART_ENABLE_IT(&huart4, UART_IT_IDLE);
 
   ibus_init();
-
-  //initialize MPU6500
-//  addr = MPU6500_ADDRESS_AD0_LOW;
-//  res = mpu6500_basic_init(MPU6500_INTERFACE_SPI, addr);
-//  if (res != 0)
-//  {
-//      return 1;
-//  }
 
   res = mpu6500_basic_init(MPU6500_INTERFACE_SPI, MPU6500_ADDRESS_AD0_LOW);
 
@@ -330,10 +375,7 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  //testowa inicjalizacja silnikow
-  ESC_SetPulse_us(1000, 0);
-  HAL_Delay(2000);
-  ESC_SetPulse_us(1500, 0);
+
 
   calibrate_gyro(500);
 
@@ -342,51 +384,68 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  //test serwa
-	  //Servo_SetPulse_us(450);
-	  //HAL_Delay(1500);
-	  //Servo_SetPulse_us(2550);
-	  //HAL_Delay(1500);
+//	  ibus_read(ibus_data);
+//	  ibus_soft_failsafe(ibus_data, 10); // if ibus is not updated, clear ibus data.
 
-	  ibus_read(ibus_data);
-	  ibus_soft_failsafe(ibus_data, 10); // if ibus is not updated, clear ibus data.
-	  HAL_Delay(10);
 
-	  compute_motor_pwm(
-	      orientation.roll,
-	      orientation.pitch,
-	      orientation.yaw,
-	      dt,
-	      ibus_data[2],     // throttle z aparatury
-	      &m1, &m2, &m3, &m4
-	  );
-
-	  ESC_SetPulse_us(m1, 1);
-	  ESC_SetPulse_us(m2, 2);
-	  ESC_SetPulse_us(m3, 3);
-	  ESC_SetPulse_us(m4, 4);
-
-	  if(MPU_Flag == 1)
+	  if(ibus_read(ibus_data))
 	  {
-		  if (mpu6500_basic_read(g, dps) != 0)
+		  ibus_soft_failsafe(ibus_data, 10);
+
+		  arm_esc();
+
+		  compute_motor_pwm(
+		  	      orientation.roll,
+		  	      orientation.pitch,
+		  	      orientation.yaw,
+		  	      dt,
+		  	      ibus_data[2],     // throttle z aparatury
+		  	      &m1, &m2, &m3, &m4
+		  	  );
+
+		  Servo_SetPulse_us(map_rc_to_servo(ibus_data[0]), 1);
+		  Servo_SetPulse_us(map_rc_to_servo(ibus_data[1]), 2);
+
+		  if(arming == 1)
 		  {
-			  (void)mpu6500_basic_deinit();
+			  ESC_SetPulse_us(m1, 1);
+			  ESC_SetPulse_us(m2, 2);
+			  ESC_SetPulse_us(m3, 3);
+			  ESC_SetPulse_us(m4, 4);
+			  ESC_SetPulse_us(ibus_data[4], 5);
+		  } else
+		  {
+			  ESC_SetPulse_us(0, 1);
+			  ESC_SetPulse_us(0, 2);
+			  ESC_SetPulse_us(0, 3);
+			  ESC_SetPulse_us(0, 4);
+			  ESC_SetPulse_us(0, 5);
 		  }
 
 
-		  if (mpu6500_basic_read_temperature(&degrees) != 0)
+		  if(MPU_Flag == 1)
 		  {
-			  (void)mpu6500_basic_deinit();
+		  	if (mpu6500_basic_read(g, dps) != 0)
+		  	{
+		  		(void)mpu6500_basic_deinit();
+		  	}
+
+
+		  	if (mpu6500_basic_read_temperature(&degrees) != 0)
+		  	{
+		  		(void)mpu6500_basic_deinit();
+		  	}
+
+		  	dt = get_delta_time();
+		  	update_orientation(dps[0], dps[1], dps[2], g[0], g[1], g[2], dt);
+
+		  	MPU_Flag = 0;
 		  }
-
-		  dt = get_delta_time();
-		  update_orientation(dps[0], dps[1], dps[2], g[0], g[1], g[2], dt);
-
-		  MPU_Flag = 0;
 	  }
+	  else
+	  {
 
-	  HAL_Delay(10);
-
+	  }
   }
   /* USER CODE END 3 */
 }
