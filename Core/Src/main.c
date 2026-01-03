@@ -165,8 +165,8 @@ void compute_motor_pwm(float roll, float pitch, float yaw, float dt,
 static inline void ESC_SetPulse_us(uint16_t us, uint8_t motor_index)
 {
 
-	if (us < 1000) us = 1000;
-	if (us > 2000) us = 2000;
+//	if (us < 1000) us = 1000; new limits are 500 1000
+//	if (us > 2000) us = 2000;
 
 	if(motor_index == 1)
 	{
@@ -196,8 +196,8 @@ static inline void ESC_SetPulse_us(uint16_t us, uint8_t motor_index)
 
 static inline void Servo_SetPulse_us(uint16_t us, uint8_t servo_index)
 {
-	if (us < 490) us = 490;
-	if (us > 2550) us = 2550;
+//	if (us < 490) us = 490; new limits are 500 1000
+//	if (us > 2550) us = 2550;
 
 	if(servo_index == 1)
 	{
@@ -210,17 +210,6 @@ static inline void Servo_SetPulse_us(uint16_t us, uint8_t servo_index)
 		__HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_4, us);
 		__HAL_TIM_SET_COMPARE(&htim12, TIM_CHANNEL_2, us);
 	}
-}
-
-static inline uint16_t map_rc_to_servo(uint16_t rc)
-{
-    if (rc < 1000) rc = 1000;
-    if (rc > 2000) rc = 2000;
-
-    uint32_t tmp = (uint32_t)(rc - 1000) * 2060u;
-    tmp = (tmp * 1049u) >> 20;
-
-    return (uint16_t)(490u + tmp);
 }
 
 float get_delta_time(void)
@@ -278,20 +267,12 @@ void arm_esc()
 {
 	if(arming == 0 && ibus_data[9] == 2000)
 	{
-		ESC_SetPulse_us(1000, 1);
-		ESC_SetPulse_us(1000, 2);
-		ESC_SetPulse_us(1000, 3);
-		ESC_SetPulse_us(1000, 4);
-		ESC_SetPulse_us(1000, 5);
+		ESC_SetPulse_us(500, 1);
+		ESC_SetPulse_us(500, 2);
+		ESC_SetPulse_us(500, 3);
+		ESC_SetPulse_us(500, 4);
+		ESC_SetPulse_us(500, 5);
 		arming = 1;
-	} else if(arming == 1 && ibus_data[9] != 2000)
-	{
-		ESC_SetPulse_us(0, 1);
-		ESC_SetPulse_us(0, 2);
-		ESC_SetPulse_us(0, 3);
-		ESC_SetPulse_us(0, 4);
-		ESC_SetPulse_us(0, 5);
-		arming = 0;
 	}
 }
 
@@ -323,7 +304,7 @@ int main(void)
   /* USER CODE END 1 */
 
   /* MPU Configuration--------------------------------------------------------*/
-   MPU_Config();
+  MPU_Config();
 
   /* MCU Configuration--------------------------------------------------------*/
 
@@ -363,63 +344,64 @@ int main(void)
   HAL_TIM_PWM_Start(&htim12, TIM_CHANNEL_2);
 
   HAL_TIM_Base_Start_IT(&htim1);
-  //HAL_UART_Receive_DMA(&huart4, uart_rx_buffer, 32);
+  //HAL_UART_Receive_DMA(&huart4, uart_rx_buffer, 32); possible trash
   __HAL_UART_ENABLE_IT(&huart4, UART_IT_IDLE);
-
-  ibus_init();
 
   res = mpu6500_basic_init(MPU6500_INTERFACE_SPI, MPU6500_ADDRESS_AD0_LOW);
 
   HAL_GPIO_WritePin(MPU6500_CS_GPIO_Port, MPU6500_CS_Pin, GPIO_PIN_SET);
+  calibrate_gyro(500);
+
+  ibus_init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
 
 
-  calibrate_gyro(500);
-
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-//	  ibus_read(ibus_data);
-//	  ibus_soft_failsafe(ibus_data, 10); // if ibus is not updated, clear ibus data.
-
 
 	  if(ibus_read(ibus_data))
 	  {
-		  ibus_soft_failsafe(ibus_data, 10);
-
 		  arm_esc();
 
-		  compute_motor_pwm(
-		  	      orientation.roll,
-		  	      orientation.pitch,
-		  	      orientation.yaw,
-		  	      dt,
-		  	      ibus_data[2],     // throttle z aparatury
-		  	      &m1, &m2, &m3, &m4
-		  	  );
+//		  compute_motor_pwm(
+//		  	      orientation.roll,
+//		  	      orientation.pitch,
+//		  	      orientation.yaw,
+//		  	      dt,
+//		  	      ibus_data[2],     // throttle z aparatury
+//		  	      &m1, &m2, &m3, &m4
+//		  	  );
 
-		  Servo_SetPulse_us(map_rc_to_servo(ibus_data[0]), 1);
-		  Servo_SetPulse_us(map_rc_to_servo(ibus_data[1]), 2);
+		  Servo_SetPulse_us(ibus_data[0]/2, 2);
+		  Servo_SetPulse_us(ibus_data[1]/2, 1);
 
-		  if(arming == 1)
+
+		  if(ibus_data[9] == 2000 && arming == 1)
 		  {
-			  ESC_SetPulse_us(m1, 1);
-			  ESC_SetPulse_us(m2, 2);
-			  ESC_SetPulse_us(m3, 3);
-			  ESC_SetPulse_us(m4, 4);
-			  ESC_SetPulse_us(ibus_data[4], 5);
+			  ESC_SetPulse_us(ibus_data[2]/2, 1);
+			  ESC_SetPulse_us(ibus_data[2]/2, 2);
+			  ESC_SetPulse_us(ibus_data[2]/2, 3);
+			  ESC_SetPulse_us(ibus_data[2]/2, 4);
+			  ESC_SetPulse_us(ibus_data[4]/2, 5);
+//			  ESC_SetPulse_us(m1, 1);
+//			  ESC_SetPulse_us(m2, 2);
+//			  ESC_SetPulse_us(m3, 3);
+//			  ESC_SetPulse_us(m4, 4);
+//			  ESC_SetPulse_us(ibus_data[4], 5);
+
 		  } else
 		  {
-			  ESC_SetPulse_us(0, 1);
-			  ESC_SetPulse_us(0, 2);
-			  ESC_SetPulse_us(0, 3);
-			  ESC_SetPulse_us(0, 4);
-			  ESC_SetPulse_us(0, 5);
+			  ESC_SetPulse_us(500, 1);
+			  ESC_SetPulse_us(500, 2);
+			  ESC_SetPulse_us(500, 3);
+			  ESC_SetPulse_us(500, 4);
+			  ESC_SetPulse_us(500, 5);
 		  }
 
 
@@ -441,10 +423,17 @@ int main(void)
 
 		  	MPU_Flag = 0;
 		  }
+		  HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_RESET);
+		  HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET);
+		  HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, GPIO_PIN_RESET);
 	  }
 	  else
 	  {
+		  HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_SET);
+		  HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_SET);
+		  HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, GPIO_PIN_SET);
 
+		  //ibus_soft_failsafe(ibus_data, 10);
 	  }
   }
   /* USER CODE END 3 */

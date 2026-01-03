@@ -63,13 +63,6 @@ extern TIM_HandleTypeDef htim2;
 extern TIM_HandleTypeDef htim3;
 extern DMA_HandleTypeDef hdma_uart4_rx;
 extern UART_HandleTypeDef huart4;
-
-extern uint8_t uart_rx_buffer[32];
-extern uint8_t ibus_data_ready;
-extern uint8_t sync_found;
-extern uint8_t ibus_frame[32];
-
-//UART4_IRQHandler(void) find
 /* USER CODE BEGIN EV */
 
 /* USER CODE END EV */
