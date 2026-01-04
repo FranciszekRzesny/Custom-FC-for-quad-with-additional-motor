@@ -36,6 +36,8 @@
 #include "math.h"
 
 #include "string.h"
+
+#include "pid.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,11 +49,13 @@ typedef struct
 	float yaw; 		// z axis
 } Orientation;
 
-typedef struct {
-    float kp, ki, kd;
-    float integral;
-    float prev_error;
-} PID_t;
+//typedef struct {
+//    float kp, ki, kd;
+//    float integral;
+//    float prev_error;
+//    float anti_wind_up;
+//    float out_max, out_min;
+//} PID_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -79,17 +83,13 @@ mpu6500_address_t addr;
 uint8_t MPU_Flag = 0;
 
 Orientation orientation = {0.0f, 0.0f, 0.0f};
-float gyro_bias[3] = {0};
+float gyro_bias[3] = {-0.01, 0.0207, 1.627};
 
 float dt = 0;
 
 uint16_t ibus_data[IBUS_USER_CHANNELS];
 
-PID_t pid_roll  = { 15.0f, 0.02f, 1.8f };
-PID_t pid_pitch = { 15.0f, 0.02f, 1.8f };
-PID_t pid_yaw   = { 15.0f, 0.02f, 0.0f };
-
-uint16_t m1, m2, m3, m4; //motor outputs
+float motor_pwm[4]; //motor outputs
 
 uint8_t uart_rx_buffer[32];
 volatile uint8_t ibus_data_ready = 0;
@@ -99,6 +99,17 @@ uint8_t ibus_frame[32];
 //static uint8_t sync_index = 0;
 
 uint8_t arming = 0;
+
+PID_t pid_angle_roll;
+PID_t pid_angle_pitch;
+
+PID_t pid_rate_roll;
+PID_t pid_rate_pitch;
+PID_t pid_rate_yaw;
+
+float roll_correction = 0;
+float pitch_correction = 0;
+float yaw_correction = 0;
 
 /* USER CODE END PV */
 
@@ -111,62 +122,62 @@ static void MPU_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-float pid_compute(PID_t *pid, float error, float dt)
+float yaw_command_from_radio(uint16_t radio_yaw)
 {
-    pid->integral += error * dt;
+    const float MAX_YAW_RATE = 120.0f; // deg/s
+    const int   DEADZONE     = 20;     // us
 
-    float derivative = (error - pid->prev_error) / dt;
-    pid->prev_error = error;
+    int delta = (int)radio_yaw - 1500;
 
-    return pid->kp * error + pid->ki * pid->integral + pid->kd * derivative;
+    // Deadzone
+    if (delta > -DEADZONE && delta < DEADZONE) {
+        return 0.0f;
+    }
+
+    float norm = delta / 500.0f;
+
+    if (norm >  1.0f) norm =  1.0f;
+    if (norm < -1.0f) norm = -1.0f;
+
+    return norm * MAX_YAW_RATE;
 }
 
-void compute_motor_pwm(float roll, float pitch, float yaw, float dt,
-                       uint16_t throttle,
-                       uint16_t *m1, uint16_t *m2,
-                       uint16_t *m3, uint16_t *m4)
+
+void calculate_all_pid(float throttle)
 {
-    float target_roll = 0.0f;
-    float target_pitch = 0.0f;
-    float target_yaw = 0.0f;
+	pid_angle_roll.setpoint  = 0.0f;
+	pid_angle_pitch.setpoint = 0.0f;
 
-    // Calculate errors
-    float roll_error  = target_roll  - roll;
-    float pitch_error = target_pitch - pitch;
-    float yaw_error   = target_yaw   - yaw;
+	float desired_rate_roll = PID_update(&pid_angle_roll, orientation.roll, dt);
+	float desired_rate_pitch = PID_update(&pid_angle_pitch, orientation.pitch, dt);
 
-    // PID output
-    float roll_correction  = pid_compute(&pid_roll,  roll_error,  dt);
-    float pitch_correction = pid_compute(&pid_pitch, pitch_error, dt);
-    float yaw_correction   = pid_compute(&pid_yaw,   yaw_error,   dt);
+	pid_rate_roll.setpoint  = desired_rate_roll;
+	pid_rate_pitch.setpoint = desired_rate_pitch;
+	pid_rate_yaw.setpoint   = yaw_command_from_radio(ibus_data[3]); //SPRAWDZIC NUMER TEGO DRAZKA!!!
 
-    // Summarise signals
-    float m1_f = throttle + pitch_correction + roll_correction - yaw_correction;  	// Front Left
-    float m2_f = throttle + pitch_correction - roll_correction + yaw_correction;  	// Front Right
-    float m3_f = throttle - pitch_correction - roll_correction - yaw_correction;  	// Rear Right
-    float m4_f = throttle - pitch_correction + roll_correction + yaw_correction;  	// Rear Left
+	roll_correction = PID_update(&pid_rate_roll, dps[0] - gyro_bias[0], dt);
+	pitch_correction = PID_update(&pid_rate_pitch, dps[1] - gyro_bias[1], dt);
+	yaw_correction = PID_update(&pid_rate_yaw, dps[2] - gyro_bias[2], dt);
 
-    // PWM LIMITATION
-    if (m1_f > 2000) m1_f = 2000;
-    if (m1_f < 1000) m1_f = 1000;
-    if (m2_f > 2000) m2_f = 2000;
-    if (m2_f < 1000) m2_f = 1000;
-    if (m3_f > 2000) m3_f = 2000;
-    if (m3_f < 1000) m3_f = 1000;
-    if (m4_f > 2000) m4_f = 2000;
-    if (m4_f < 1000) m4_f = 1000;
 
-    *m1 = (uint16_t)m1_f;
-    *m2 = (uint16_t)m2_f;
-    *m3 = (uint16_t)m3_f;
-    *m4 = (uint16_t)m4_f;
+//	motor_pwm[0] = throttle + pitch_correction + roll_correction - yaw_correction;
+//	motor_pwm[1] = throttle + pitch_correction - roll_correction + yaw_correction;
+//	motor_pwm[2] = throttle - pitch_correction - roll_correction - yaw_correction;
+//	motor_pwm[3] = throttle - pitch_correction + roll_correction + yaw_correction;
+
+	//test
+	motor_pwm[0] = pitch_correction + roll_correction - yaw_correction;
+	motor_pwm[1] = pitch_correction - roll_correction + yaw_correction;
+	motor_pwm[2] = pitch_correction - roll_correction - yaw_correction;
+	motor_pwm[3] = pitch_correction + roll_correction + yaw_correction;
 }
+
 
 static inline void ESC_SetPulse_us(uint16_t us, uint8_t motor_index)
 {
 
-//	if (us < 1000) us = 1000; new limits are 500 1000
-//	if (us > 2000) us = 2000;
+	if (us < 500) us = 500; //new limits are 500 1000
+	if (us > 1000) us = 1000;
 
 	if(motor_index == 1)
 	{
@@ -230,7 +241,7 @@ void update_orientation(float gx, float gy, float gz, float ax, float ay, float 
 	float acc_roll = atan2f(ay, az) * 180.0f / M_PI;
 	float acc_pitch = atan2f(-ax, sqrtf(ay*ay + az*az)) * 180.0f / M_PI;
 
-	const float alpha = 0.88f;
+	const float alpha = 0.9f;
 	orientation.roll  = alpha * orientation.roll  + (1.0f - alpha) * acc_roll;
 	orientation.pitch = alpha * orientation.pitch + (1.0f - alpha) * acc_pitch;
 
@@ -350,7 +361,14 @@ int main(void)
   res = mpu6500_basic_init(MPU6500_INTERFACE_SPI, MPU6500_ADDRESS_AD0_LOW);
 
   HAL_GPIO_WritePin(MPU6500_CS_GPIO_Port, MPU6500_CS_Pin, GPIO_PIN_SET);
-  calibrate_gyro(500);
+  //calibrate_gyro(500);
+
+  PID_init(&pid_rate_roll, 3, 0, 0.2);
+  PID_init(&pid_rate_pitch, 3, 0, 0.2);
+  PID_init(&pid_rate_yaw, 3, 0, 0.2);
+
+  PID_init(&pid_angle_roll, 3, 0, 0.1);
+  PID_init(&pid_angle_pitch, 3, 0, 0.1);
 
   ibus_init();
   /* USER CODE END 2 */
@@ -369,15 +387,6 @@ int main(void)
 	  {
 		  arm_esc();
 
-//		  compute_motor_pwm(
-//		  	      orientation.roll,
-//		  	      orientation.pitch,
-//		  	      orientation.yaw,
-//		  	      dt,
-//		  	      ibus_data[2],     // throttle z aparatury
-//		  	      &m1, &m2, &m3, &m4
-//		  	  );
-
 		  Servo_SetPulse_us(ibus_data[0]/2, 2);
 		  Servo_SetPulse_us(ibus_data[1]/2, 1);
 
@@ -389,10 +398,10 @@ int main(void)
 			  ESC_SetPulse_us(ibus_data[2]/2, 3);
 			  ESC_SetPulse_us(ibus_data[2]/2, 4);
 			  ESC_SetPulse_us(ibus_data[4]/2, 5);
-//			  ESC_SetPulse_us(m1, 1);
-//			  ESC_SetPulse_us(m2, 2);
-//			  ESC_SetPulse_us(m3, 3);
-//			  ESC_SetPulse_us(m4, 4);
+//			  ESC_SetPulse_us(motor_pwm[0], 1);
+//			  ESC_SetPulse_us(motor_pwm[1], 2);
+//			  ESC_SetPulse_us(motor_pwm[2], 3);
+//			  ESC_SetPulse_us(motor_pwm[3], 4);
 //			  ESC_SetPulse_us(ibus_data[4], 5);
 
 		  } else
@@ -421,6 +430,8 @@ int main(void)
 		  	dt = get_delta_time();
 		  	update_orientation(dps[0], dps[1], dps[2], g[0], g[1], g[2], dt);
 
+		  	calculate_all_pid(ibus_data[2]/2);
+
 		  	MPU_Flag = 0;
 		  }
 		  HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_RESET);
@@ -433,7 +444,7 @@ int main(void)
 		  HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_SET);
 		  HAL_GPIO_WritePin(LED3_GPIO_Port, LED3_Pin, GPIO_PIN_SET);
 
-		  //ibus_soft_failsafe(ibus_data, 10);
+		  //ibus_soft_failsafe(ibus_data, 10); //do testów na większym fail safe
 	  }
   }
   /* USER CODE END 3 */
