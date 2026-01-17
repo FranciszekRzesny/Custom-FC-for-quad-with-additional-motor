@@ -59,6 +59,10 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define MPU_INT_Pin GPIO_PIN_0
 #define MPU_INT_GPIO_Port GPIOC
+#define BARO_MOSI_Pin GPIO_PIN_1
+#define BARO_MOSI_GPIO_Port GPIOC
+#define BARO_MISO_Pin GPIO_PIN_2
+#define BARO_MISO_GPIO_Port GPIOC
 #define MPU6500_CS_Pin GPIO_PIN_3
 #define MPU6500_CS_GPIO_Port GPIOC
 #define MPU_SCK_Pin GPIO_PIN_5
@@ -67,8 +71,10 @@ void Error_Handler(void);
 #define MPU_MISO_GPIO_Port GPIOA
 #define MPU_MOSI_Pin GPIO_PIN_7
 #define MPU_MOSI_GPIO_Port GPIOA
-#define LPS_CS_Pin GPIO_PIN_4
-#define LPS_CS_GPIO_Port GPIOC
+#define BARO_CS_Pin GPIO_PIN_4
+#define BARO_CS_GPIO_Port GPIOC
+#define BARO_SCK_Pin GPIO_PIN_10
+#define BARO_SCK_GPIO_Port GPIOB
 #define LED1_Pin GPIO_PIN_12
 #define LED1_GPIO_Port GPIOB
 #define LED2_Pin GPIO_PIN_13

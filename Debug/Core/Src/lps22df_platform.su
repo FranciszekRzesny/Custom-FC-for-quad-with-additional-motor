@@ -1,0 +1,4 @@
+../Core/Src/lps22df_platform.c:17:9:lps22df_platform_write	24	static
+../Core/Src/lps22df_platform.c:63:9:lps22df_platform_read	24	static
+../Core/Src/lps22df_platform.c:109:9:lps22df_init	32	static
+../Core/Src/lps22df_platform.c:146:6:platform_delay	16	static
