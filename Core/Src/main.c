@@ -64,6 +64,8 @@ typedef struct
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define GRAVITY 9.80665f
+#define ALT_BARO_WEIGHT 0.98f
+#define ALT_ACC_WEIGHT  (1.0f - ALT_BARO_WEIGHT)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -114,7 +116,7 @@ float roll_correction = 0;
 float pitch_correction = 0;
 float yaw_correction = 0;
 
-float altitude = 0.0f;
+float altitude_estimate = 0.0f;
 float vertical_velocity = 0.0f;
 PID_t pid_altitude;
 
@@ -126,6 +128,21 @@ lps22df_bus_mode_t bus_mode;
 lps22df_all_sources_t all_sources;
 float pressure_hpa = 1.0f;
 float temperature  = 0.0f;
+/* === ALTITUDE ESTIMATION STATE === */
+static float altitude = 0.0f;        // wynik końcowy [m] (względem startu)
+
+/* === BAROMETER === */
+static float baro_offset = 0.0f;     // baro altitude w spoczynku [m]
+static float baro_filt = 0.0f;       // filtrowana wysokość baro [m]
+
+/* === ACCELEROMETER === */
+static float acc_z_offset = 0.0f;    // az_g w bezruchu (np. 1.1126 g)
+
+/* === FLAGS === */
+static uint8_t calibrated = 0;       // zakończona kalibracja
+float baro_p0 = 1013.25f;
+
+
 
 /* USER CODE END PV */
 
@@ -172,48 +189,103 @@ void lps22df_setup(void)
 
     /* ustaw tryb pracy */
 
-    md.odr = LPS22DF_4Hz;
-    md.avg = LPS22DF_16_AVG;      // 32 próbki do uśrednienia
-    md.lpf = LPS22DF_LPF_ODR_DIV_9; // filtr dolnoprzepustowy
+    md.odr = LPS22DF_100Hz;		// wczesniej bylo 50hz
+    md.avg = LPS22DF_4_AVG;      // 32 próbki do uśrednienia
+    md.lpf = LPS22DF_LPF_ODR_DIV_4; // filtr dolnoprzepustowy
     lps22df_mode_set(&lps22df_ctx, &md);
 
     bus_mode.interface = LPS22DF_SPI_4W;
-    bus_mode.filter = LPS22DF_FILTER_ALWAYS_ON;
-    bus_mode.i3c_ibi_time = LPS22DF_IBI_50us;
+    bus_mode.filter = LPS22DF_FILTER_AUTO;
+    bus_mode.i3c_ibi_time = LPS22DF_IBI_2us; //LPS22DF_IBI_50us;
     lps22df_bus_mode_set(&lps22df_ctx, &bus_mode);
 
 
 }
 
-
-void update_altitude(float ax, float ay, float az, float dt)
+void calibrate_altitude_offsets(void)
 {
-    float roll_rad  = orientation.roll  * M_PI / 180.0f;
-    float pitch_rad = orientation.pitch * M_PI / 180.0f;
+	while(true)
+	{
+			static uint32_t cnt = 0;
+		    static float acc_sum = 0.0f;
+		    static float baro_sum = 0.0f;
 
-    float g_proj = cosf(roll_rad) * cosf(pitch_rad);
+		    /* === ODCZYT IMU === */
+		    if (mpu6500_basic_read(g, dps) != 0)
+		    {
+		        return; // pomiń próbkę
+		    }
 
-    float a_linear_z = (az - g_proj) * GRAVITY;
+		    float az_g = g[2];   // Z osi MPU (w g!)
 
-    static float a_filt = 0.0f;
-    a_filt = 0.9f * a_filt + 0.1f * a_linear_z;
+		    /* === ODCZYT BAROMETRU === */
+		    lps22df_all_sources_get(&lps22df_ctx, &all_sources);
+		    if (lps22df_data_get(&lps22df_ctx, &data) != 0)
+		    {
+		        return;
+		    }
 
-    vertical_velocity += a_filt * dt;
-    altitude += vertical_velocity * dt;
+		    float pressure_hpa = data.pressure.hpa;
 
-    if (arming == 0)
-    {
-        altitude = 0.0f;
-        vertical_velocity = 0.0f;
-    }
+		    float baro_alt =
+		        44330.0f * (1.0f - powf(pressure_hpa / baro_p0, 0.1903f));
+
+		    /* === AKUMULACJA === */
+		    acc_sum  += az_g;
+		    baro_sum += baro_alt;
+		    cnt++;
+
+		    /* === ZAKOŃCZENIE === */
+		    if (cnt >= 200)   // np. 200 próbek (~2–4 s)
+		    {
+		        acc_z_offset = acc_sum / cnt;
+		        baro_offset  = baro_sum / cnt;
+		        calibrated = 1;
+		        return;
+		    }
+	}
 }
+
+
+
+
+void update_altitude_fusion(float az_g, float pressure_hpa, float dt)
+{
+	if (!calibrated)
+	        return;
+
+	    /* === PARAMETRY === */
+	    const float baro_lp = 0.05f;
+	    const float acc_gain = 0.03f;
+	    const float acc_deadband_g = 0.02f;
+
+	    /* === BARO → ALT === */
+	    float baro_alt =
+	        44330.0f * (1.0f - powf(pressure_hpa / baro_p0, 0.1903f));
+
+	    static float baro_filt = 0.0f;
+	    baro_filt += baro_lp * (baro_alt - baro_filt);
+
+	    float baro_rel = baro_filt - baro_offset;
+
+	    /* === ACC (BEZ g) === */
+	    float a_z = az_g - acc_z_offset;
+
+	    if (fabsf(a_z) < acc_deadband_g)
+	        a_z = 0.0f;
+
+	    /* === FUZJA === */
+	    altitude += acc_gain * a_z;
+	    altitude += 0.02f * (baro_rel - altitude);
+}
+
+
 
 float altitude_setpoint_from_radio(uint16_t ch)
 {
-    float norm = ((float)ch - 1500.0f) / 500.0f;
-
+    float norm = ((float)ch - 1000.0f) / 1000.0f; // od 1000 do 2000 -> 0..1
+    if (norm < 0.0f) norm = 0.0f;
     if (norm > 1.0f) norm = 1.0f;
-    if (norm < -1.0f) norm = -1.0f;
 
     const float MAX_ALTITUDE = 2.0f; // metry
     return norm * MAX_ALTITUDE;
@@ -222,9 +294,7 @@ float altitude_setpoint_from_radio(uint16_t ch)
 float altitude_hold_pid(void)
 {
     pid_altitude.setpoint = altitude_setpoint_from_radio(ibus_data[3]);
-
-    float thrust_correction = PID_update(&pid_altitude, altitude, dt);
-
+    float thrust_correction = PID_update(&pid_altitude, altitude_estimate, dt);
     return thrust_correction;
 }
 
@@ -267,14 +337,17 @@ void calculate_all_pid(float base_throttle)
 
     // --- ALTITUDE PID ---
     float altitude_correction = altitude_hold_pid();
-
     float throttle = base_throttle + altitude_correction;
 
     // --- MIXER ---
-    motor_pwm[0] = throttle + pitch_correction + roll_correction - yaw_correction;
-    motor_pwm[1] = throttle + pitch_correction - roll_correction + yaw_correction;
-    motor_pwm[2] = throttle - pitch_correction - roll_correction - yaw_correction;
-    motor_pwm[3] = throttle - pitch_correction + roll_correction + yaw_correction;
+    motor_pwm[0] = throttle + pitch_correction + roll_correction + yaw_correction;
+    motor_pwm[1] = throttle + pitch_correction - roll_correction - yaw_correction;
+    motor_pwm[2] = throttle - pitch_correction - roll_correction + yaw_correction;
+    motor_pwm[3] = throttle - pitch_correction + roll_correction - yaw_correction;
+//    motor_pwm[0] = throttle - pitch_correction - roll_correction - yaw_correction;
+//    motor_pwm[1] = throttle - pitch_correction + roll_correction + yaw_correction;
+//    motor_pwm[2] = throttle + pitch_correction + roll_correction - yaw_correction;
+//    motor_pwm[3] = throttle + pitch_correction - roll_correction + yaw_correction;
 }
 
 static inline void ESC_SetPulse_us(uint16_t us, uint8_t motor_index)
@@ -329,11 +402,11 @@ static inline void Servo_SetPulse_us(uint16_t us, uint8_t servo_index)
 
 float get_delta_time(void)
 {
-	static uint64_t last = 0;
-	uint64_t now = HAL_GetTick();
-	float dt = (now - last) / 1000.0f;
-	last = now;
-	return dt;
+    static uint64_t last = 0;
+    uint64_t now = HAL_GetTick();
+    float dt = (now - last) / 1000.0f;
+    last = now;
+    return dt;
 }
 
 void update_orientation(float gx, float gy, float gz, float ax, float ay, float az, float dt)
@@ -477,14 +550,15 @@ int main(void)
   HAL_GPIO_WritePin(MPU6500_CS_GPIO_Port, MPU6500_CS_Pin, GPIO_PIN_SET);
 
   lps22df_setup();
+  calibrate_altitude_offsets();
   //calibrate_gyro(500);
 
-  PID_init(&pid_rate_roll, 3, 0, 0.2);
-  PID_init(&pid_rate_pitch, 3, 0, 0.2);
-  PID_init(&pid_rate_yaw, 3, 0, 0.2);
+  PID_init(&pid_rate_roll,  0.12f, 0.0f, 0.002f);
+  PID_init(&pid_rate_pitch, 0.12f, 0.0f, 0.002f);
+  PID_init(&pid_rate_yaw,   0.20f, 0.0f, 0.000f);
 
-  PID_init(&pid_angle_roll, 3, 0, 0.1);
-  PID_init(&pid_angle_pitch, 3, 0, 0.1);
+  PID_init(&pid_angle_roll,  4.0f, 0.0f, 0.0f);
+  PID_init(&pid_angle_pitch, 4.0f, 0.0f, 0.0f);
 
   PID_init(&pid_altitude, 2.0f, 0.0f, 0.0f);
   pid_altitude.out_min = -200;
@@ -517,16 +591,16 @@ int main(void)
 
 		  if(ibus_data[9] == 2000 && arming == 1)
 		  {
-			  ESC_SetPulse_us(ibus_data[2]/2, 1);
-			  ESC_SetPulse_us(ibus_data[2]/2, 2);
-			  ESC_SetPulse_us(ibus_data[2]/2, 3);
-			  ESC_SetPulse_us(ibus_data[2]/2, 4);
+//			  ESC_SetPulse_us(ibus_data[2]/2, 1);
+//			  ESC_SetPulse_us(ibus_data[2]/2, 2);
+//			  ESC_SetPulse_us(ibus_data[2]/2, 3);
+//			  ESC_SetPulse_us(ibus_data[2]/2, 4);
+//			  ESC_SetPulse_us(ibus_data[4]/2, 5);
+			  ESC_SetPulse_us(motor_pwm[0], 1);
+			  ESC_SetPulse_us(motor_pwm[1], 2);
+			  ESC_SetPulse_us(motor_pwm[2], 3);
+			  ESC_SetPulse_us(motor_pwm[3], 4);
 			  ESC_SetPulse_us(ibus_data[4]/2, 5);
-//			  ESC_SetPulse_us(motor_pwm[0], 1);
-//			  ESC_SetPulse_us(motor_pwm[1], 2);
-//			  ESC_SetPulse_us(motor_pwm[2], 3);
-//			  ESC_SetPulse_us(motor_pwm[3], 4);
-//			  ESC_SetPulse_us(ibus_data[4], 5);
 
 		  } else
 		  {
@@ -560,7 +634,8 @@ int main(void)
 
 		  	dt = get_delta_time();
 		  	update_orientation(dps[0], dps[1], dps[2], g[0], g[1], g[2], dt);
-		  	update_altitude(g[0], g[1], g[2], dt);
+		  	update_altitude_fusion(g[2], data.pressure.hpa, dt);
+
 
 		  	calculate_all_pid(ibus_data[2]/2);
 
